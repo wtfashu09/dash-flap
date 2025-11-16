@@ -18,9 +18,9 @@ const PIPE_WIDTH = 80;
 const PIPE_GAP_PERCENT = 0.28; // 28% of canvas height
 const GRAVITY = 0.3;
 const JUMP_STRENGTH = -7;
-const PIPE_SPEED = -3;
-const PIPE_SPAWN_INTERVAL = 100; // in frames
-const COIN_SIZE = 40;
+const PIPE_SPEED = -2.5;
+const PIPE_SPAWN_INTERVAL = 120; // in frames
+const COIN_SIZE = 30;
 
 
 interface Bird {
@@ -33,6 +33,7 @@ interface Bird {
 interface Pipe {
   x: number;
   topPipeHeight: number;
+  passed?: boolean;
 }
 
 interface Coin {
@@ -61,12 +62,14 @@ export function SoarScapeGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameOverBirdCanvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const gameOverAudioRef = useRef<HTMLAudioElement | null>(null);
+  const passPipeAudioRef = useRef<HTMLAudioElement | null>(null);
   const [gameState, setGameState] = useState<GameState>('policy');
   const [score, setScore] = useState(0);
   const [highScore, setHighScore] = useState(0);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isMuted, setIsMuted] = useState(true);
+  const [isMuted, setIsMuted] = useState(false);
   const { toast } = useToast();
 
   const dimensionsRef = useRef({ width: 480, height: 640 });
@@ -79,7 +82,7 @@ export function SoarScapeGame() {
   const colorsRef = useRef({ primary: '', accent: '', background: '', foreground: '' });
   
   const backgroundCanvasRef = useRef<HTMLCanvasElement | null>(null);
-
+  
   const drawBird = useCallback((ctx: CanvasRenderingContext2D) => {
     const bird = birdRef.current;
     const turbanRed = '#d92525';
@@ -132,7 +135,7 @@ export function SoarScapeGame() {
     
     ctx.restore();
   }, []);
-  
+
   const preRenderBackground = useCallback(() => {
     const { width, height } = dimensionsRef.current;
     const p = (size: number) => Math.floor(size); // pixelated size
@@ -197,16 +200,42 @@ export function SoarScapeGame() {
       background: `hsl(${styles.getPropertyValue('--background')})`,
       foreground: `hsl(${styles.getPropertyValue('--foreground')})`,
     };
-
-    // Set initial mute state from local storage or default to true
-    const savedMuteState = localStorage.getItem('dashmeshflap_muted');
-    const initialMute = savedMuteState ? JSON.parse(savedMuteState) : true;
-    setIsMuted(initialMute);
+    
+    // This effect runs only on the client, so `new Audio` is safe here.
     if (audioRef.current) {
-      audioRef.current.muted = initialMute;
+        audioRef.current.volume = 0.3;
     }
+    if (!gameOverAudioRef.current) {
+        gameOverAudioRef.current = new Audio('/game-over.mp3');
+        gameOverAudioRef.current.volume = 1.0;
+    }
+    if (!passPipeAudioRef.current) {
+        passPipeAudioRef.current = new Audio('/effect.mp3');
+        passPipeAudioRef.current.volume = 1.0;
+    }
+
+    // Set initial mute state from local storage or default to false (music on)
+    const savedMuteState = localStorage.getItem('dashmeshflap_muted');
+    const initialMute = savedMuteState ? JSON.parse(savedMuteState) : false;
+    setIsMuted(initialMute);
+    
     preRenderBackground();
   }, [preRenderBackground]);
+
+  useEffect(() => {
+    if (audioRef.current) {
+        audioRef.current.muted = isMuted;
+        if (audioRef.current.loop) { // Ensure loop is set correctly
+          audioRef.current.loop = true;
+        }
+    }
+    if (gameOverAudioRef.current) {
+        gameOverAudioRef.current.muted = isMuted;
+    }
+    if (passPipeAudioRef.current) {
+        passPipeAudioRef.current.muted = isMuted;
+    }
+  }, [isMuted]);
 
   useEffect(() => {
     if (score > highScore) {
@@ -216,22 +245,33 @@ export function SoarScapeGame() {
   }, [score, highScore]);
 
     useEffect(() => {
-    if (gameState === 'over' && gameOverBirdCanvasRef.current) {
-      const canvas = gameOverBirdCanvasRef.current;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        // Temporarily modify bird state for drawing
-        const originalBird = { ...birdRef.current };
-        birdRef.current.x = canvas.width / 2;
-        birdRef.current.y = canvas.height / 2;
-        birdRef.current.rotation = 0;
-        drawBird(ctx);
-        // Restore original bird state
-        birdRef.current = originalBird;
-      }
+    if (gameState === 'over') {
+        if (gameOverBirdCanvasRef.current) {
+            const canvas = gameOverBirdCanvasRef.current;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                // Temporarily modify bird state for drawing
+                const originalBird = { ...birdRef.current };
+                birdRef.current.x = canvas.width / 2;
+                birdRef.current.y = canvas.height / 2;
+                birdRef.current.rotation = 0;
+                drawBird(ctx);
+                // Restore original bird state
+                birdRef.current = originalBird;
+            }
+        }
+        
+        // Stop background music and play game over sound once
+        if (audioRef.current && !audioRef.current.paused) {
+            audioRef.current.pause();
+            audioRef.current.currentTime = 0;
+        }
+        if (gameOverAudioRef.current && !isMuted) {
+            gameOverAudioRef.current.play().catch(e => console.error("Game over sound failed", e));
+        }
     }
-  }, [gameState, drawBird]);
+  }, [gameState, drawBird, isMuted]);
 
   
   const getCanvasAndContext = useCallback(() => {
@@ -262,6 +302,7 @@ export function SoarScapeGame() {
   
   const playMusic = useCallback(() => {
     if (audioRef.current && !isMuted) {
+      audioRef.current.loop = true;
       audioRef.current.play().catch(error => {
         // Autoplay was prevented. User interaction is needed.
         // This is fine as the music will play on the first jump.
@@ -295,13 +336,10 @@ export function SoarScapeGame() {
   const toggleMute = () => {
     const newMutedState = !isMuted;
     setIsMuted(newMutedState);
-    if (audioRef.current) {
-      audioRef.current.muted = newMutedState;
-      if (!newMutedState) {
-         audioRef.current.play().catch(e => console.error("Audio play failed:", e));
-      } else {
-        audioRef.current.pause();
-      }
+    if (!newMutedState && gameState === 'playing') {
+        audioRef.current?.play().catch(e => console.error("Audio play failed:", e));
+    } else {
+        audioRef.current?.pause();
     }
     localStorage.setItem('dashmeshflap_muted', JSON.stringify(newMutedState));
   };
@@ -365,64 +403,86 @@ export function SoarScapeGame() {
   const drawCoins = useCallback((ctx: CanvasRenderingContext2D) => {
     coinsRef.current.forEach(coin => {
         ctx.save();
-        const scale = COIN_SIZE / 100;
+        const scale = COIN_SIZE / 20;
         ctx.translate(coin.x, coin.y);
         ctx.scale(scale, scale);
-        ctx.translate(-50, -50);
-        
-        // Pixelated Coin Drawing
-        const colors = {
-          darkOutline: '#4a2a09',
-          lightOutline: '#ad6a10',
-          darkest: '#6d4308',
-          dark: '#b1560f',
-          mid: '#f7760f',
-          light: '#f7b20f',
-          lightest: '#f7d30f',
-          shine: '#ffffff',
-        };
+        ctx.translate(-10, -10);
 
+        const colors = {
+          dark_gold: '#b1560f',
+          gold: '#f3a614',
+          light_gold: '#ffd52c',
+          dark_brown: '#4e2a01',
+          brown: '#794c1d',
+          light_brown: '#b47434',
+        }
         const p = (x:number, y:number, w:number, h:number, color:string) => {
           ctx.fillStyle = color;
-          ctx.fillRect(x*5, y*5, w*5, h*5);
+          ctx.fillRect(x, y, w, h);
         }
+
+        p(7, 0, 6, 1, colors.dark_brown);
+        p(6, 1, 8, 1, colors.dark_brown);
+        p(5, 2, 10, 1, colors.dark_brown);
+        p(4, 3, 12, 1, colors.dark_brown);
+        p(3, 4, 14, 1, colors.dark_brown);
+        p(3, 5, 1, 10, colors.dark_brown);
+        p(2, 6, 1, 8, colors.dark_brown);
+        p(1, 7, 1, 6, colors.dark_brown);
+        p(0, 8, 1, 4, colors.dark_brown);
+        p(1, 13, 1, 1, colors.dark_brown);
+        p(2, 14, 1, 2, colors.dark_brown);
+        p(3, 15, 1, 1, colors.dark_brown);
+        p(4, 16, 12, 1, colors.dark_brown);
+        p(5, 17, 10, 1, colors.dark_brown);
+        p(6, 18, 8, 1, colors.dark_brown);
+        p(7, 19, 6, 1, colors.dark_brown);
+        p(16, 4, 1, 12, colors.dark_brown);
+        p(17, 5, 1, 10, colors.dark_brown);
+        p(18, 6, 1, 8, colors.dark_brown);
+        p(19, 8, 1, 4, colors.dark_brown);
         
-        // Outer ring
-        ctx.fillStyle = colors.darkOutline;
-        ctx.fillRect(20, 0, 60, 100); ctx.fillRect(0, 20, 100, 60);
-
-        // Inner part of the ring
-        ctx.fillStyle = colors.lightOutline;
-        ctx.fillRect(25, 5, 50, 90); ctx.fillRect(5, 25, 90, 50);
-
-        // Main coin body
-        ctx.fillStyle = colors.dark;
-        ctx.fillRect(25, 25, 50, 50);
+        p(7, 1, 6, 1, colors.brown);
+        p(6, 2, 1, 1, colors.brown);
+        p(13, 2, 1, 1, colors.brown);
+        p(5, 3, 1, 1, colors.brown);
+        p(14, 3, 1, 1, colors.brown);
+        p(4, 4, 1, 12, colors.brown);
+        p(15, 4, 1, 12, colors.brown);
+        p(5, 16, 1, 1, colors.brown);
+        p(14, 16, 1, 1, colors.brown);
+        p(6, 17, 1, 1, colors.brown);
+        p(13, 17, 1, 1, colors.brown);
+        p(7, 18, 6, 1, colors.brown);
         
-        // Letter 'D'
-        p(7, 5, 2, 10, colors.lightest);
-        p(9, 5, 1, 1, colors.lightest);
-        p(9, 14, 1, 1, colors.lightest);
-        p(10, 6, 1, 1, colors.lightest);
-        p(10, 13, 1, 1, colors.lightest);
-        p(11, 7, 1, 6, colors.lightest);
+        p(8, 1, 4, 1, colors.dark_gold);
+        p(7, 2, 6, 1, colors.dark_gold);
+        p(6, 3, 8, 1, colors.dark_gold);
+        p(5, 4, 10, 1, colors.dark_gold);
+        p(5, 5, 10, 10, colors.dark_gold);
+        p(6, 15, 8, 1, colors.dark_gold);
+        p(7, 16, 6, 1, colors.dark_gold);
+        p(8, 17, 4, 1, colors.dark_gold);
+        
+        p(8, 2, 4, 1, colors.gold);
+        p(7, 3, 6, 1, colors.gold);
+        p(6, 4, 8, 1, colors.gold);
+        p(6, 5, 8, 9, colors.gold);
+        p(7, 14, 6, 1, colors.gold);
+        p(8, 15, 4, 1, colors.gold);
+        p(9, 16, 2, 1, colors.gold);
 
-        p(7, 4, 1, 1, colors.mid); p(8, 4, 2, 1, colors.mid);
-        p(10, 5, 1, 1, colors.mid);
-        p(11, 6, 1, 1, colors.mid);
-        p(12, 7, 1, 6, colors.mid);
-        p(11, 13, 1, 1, colors.mid);
-        p(10, 14, 1, 1, colors.mid);
-        p(9, 15, 1, 1, colors.mid);
-        p(7, 15, 2, 1, colors.mid);
+        p(9, 3, 2, 1, colors.light_gold);
+        p(8, 4, 4, 1, colors.light_gold);
+        p(7, 5, 6, 1, colors.light_gold);
+        p(7, 6, 6, 7, colors.light_gold);
+        p(8, 13, 4, 1, colors.light_gold);
+        p(9, 14, 2, 1, colors.light_gold);
 
-        // Shine
-        ctx.fillStyle = colors.shine;
-        ctx.globalAlpha = 0.6;
-        ctx.fillRect(25, 25, 15, 10);
-        ctx.fillRect(25, 35, 5, 5);
-        ctx.globalAlpha = 1.0;
-
+        p(7, 8, 1, 4, colors.brown);
+        p(8, 7, 3, 1, colors.brown);
+        p(11, 8, 1, 4, colors.brown);
+        p(8, 11, 3, 1, colors.brown);
 
         ctx.restore();
     });
@@ -524,14 +584,38 @@ export function SoarScapeGame() {
           const minPipeHeight = 80;
           const maxPipeHeight = height - PIPE_GAP - 80;
           const topPipeHeight = Math.floor(Math.random() * (maxPipeHeight - minPipeHeight + 1)) + minPipeHeight;
-          pipesRef.current.push({ x: width, topPipeHeight });
+          pipesRef.current.push({ x: width, topPipeHeight, passed: false });
 
           // Spawn a coin in the gap
           const coinY = topPipeHeight + (PIPE_GAP / 2);
           coinsRef.current.push({ x: width + (PIPE_WIDTH / 2), y: coinY });
         }
         
-        pipesRef.current.forEach(pipe => { pipe.x += PIPE_SPEED; });
+        // Coin collision
+        coinsRef.current = coinsRef.current.filter(coin => {
+            const distance = Math.sqrt((birdRef.current.x - coin.x) ** 2 + (birdRef.current.y - coin.y) ** 2);
+            if (distance < BIRD_WIDTH / 2 + COIN_SIZE / 2) {
+                setScore(s => s + 100);
+                toast({
+                    title: "Fees Increased!",
+                    description: "100rs have been added.",
+                });
+                return false; // Remove the coin
+            }
+            return true; // Keep the coin
+        });
+
+        pipesRef.current.forEach(pipe => { 
+            pipe.x += PIPE_SPEED; 
+            if (!pipe.passed && pipe.x + PIPE_WIDTH < birdRef.current.x) {
+                pipe.passed = true;
+                // setScore(s => s + 1); // Removed scoring for passing pipe
+                if (passPipeAudioRef.current && !isMuted) {
+                    passPipeAudioRef.current.currentTime = 0;
+                    passPipeAudioRef.current.play().catch(e => console.error("Pass pipe sound failed", e));
+                }
+            }
+        });
         coinsRef.current.forEach(coin => { coin.x += PIPE_SPEED; });
         pipesRef.current = pipesRef.current.filter(pipe => pipe.x + PIPE_WIDTH + 16 > 0);
         coinsRef.current = coinsRef.current.filter(coin => coin.x + COIN_SIZE > 0);
@@ -589,25 +673,6 @@ export function SoarScapeGame() {
             setGameState('over');
           }
         }
-
-        // Coin collision
-        coinsRef.current = coinsRef.current.filter(coin => {
-            const distance = Math.sqrt((bird.x - coin.x) ** 2 + (bird.y - coin.y) ** 2);
-            if (distance < BIRD_WIDTH / 2 + COIN_SIZE / 2) {
-                setScore(s => s + 100);
-                toast({
-                    title: "Fees Increased!",
-                    description: "100rs have been added.",
-                });
-                return false; // Remove the coin
-            }
-            return true; // Keep the coin
-        });
-      }
-
-      if(gameState === 'over' && audioRef.current) {
-          audioRef.current.pause();
-          if (audioRef.current) audioRef.current.currentTime = 0;
       }
       
       // Drawing
@@ -623,7 +688,7 @@ export function SoarScapeGame() {
     gameLoop();
 
     return () => cancelAnimationFrame(animationFrameId);
-  }, [gameState, getCanvasAndContext, setScore, drawPipes, drawBird, drawBackground, drawCoins, toast]);
+  }, [gameState, getCanvasAndContext, setScore, drawPipes, drawBird, drawBackground, drawCoins, toast, isMuted]);
 
   useEffect(() => {
     const handleEvent = (e: Event) => {
@@ -648,7 +713,7 @@ export function SoarScapeGame() {
 
   return (
     <div ref={containerRef} className="w-full h-full relative">
-      <audio ref={audioRef} src="https://cdn.pixabay.com/download/audio/2022/08/23/audio_a83c538a86.mp3" loop />
+      <audio ref={audioRef} src="/bg.mp3" />
       <h1 className="text-5xl font-bold text-foreground sr-only">Dashmesh Flap</h1>
       <div className="relative w-full h-full cursor-pointer">
         <canvas ref={canvasRef} className="w-full h-full" />
@@ -662,7 +727,7 @@ export function SoarScapeGame() {
             </DialogTrigger>
             <DialogContent className="w-auto max-w-[300px] border-4">
               <DialogHeader>
-                <DialogTitle>Settings</DialogTitle>
+                <DialogTitle>Info</DialogTitle>
               </DialogHeader>
               <div className="flex flex-col gap-4 py-4">
                 <div className="flex items-center justify-between">
